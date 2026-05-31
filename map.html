@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Blackout Map - Chennai</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css"/>
+    <style>
+        body { margin: 0; font-family: Arial; }
+        #map { height: 100vh; width: 100%; }
+        #report-form { 
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: white; padding: 25px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            display: none; z-index: 2000; min-width: 400px;
+        }
+        button { background: #dc2626; color: white; border: none; padding: 10px 16px; border-radius: 6px; cursor: pointer; margin: 5px; }
+        #custom-reason { display: none; }
+        select, input { width: 100%; padding: 10px; margin: 8px 0; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+    </style>
+</head>
+<body>
+    <div id="report-form">
+        <h3>⚡ Report Power Issue</h3>
+        <label>Issue Type:</label>
+        <select id="complaint-type" required>
+            <option value="powercut">Powercut</option>
+            <option value="leakage">Electricity Leakage</option>
+            <option value="low_voltage">Low Voltage</option>
+            <option value="phase_cut">One/Two-Phase Cut</option>
+            <option value="transformer_issue">Transformer Issue</option>
+            <option value="transformer_fire">Transformer Fire</option>
+            <option value="other">Others</option>
+        </select>
+        <input id="custom-reason" placeholder="Describe other issue...">
+        <label>Description:</label>
+        <input id="desc" placeholder="Additional details...">
+        <label>Time (auto-filled):</label>
+        <input id="timestamp" type="datetime-local" readonly>
+        <div style="text-align:right;">
+            <button onclick="closeReportForm()">Cancel</button>
+            <button onclick="submitReport()">Submit</button>
+        </div>
+    </div>
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
+    <script>
+        const chennaiBounds = [[12.90, 79.95], [13.20, 80.40]];
+        const map = L.map('map', {
+            center: [13.0827, 80.2707], zoom: 11,
+            minZoom: 10, maxZoom: 17,
+            maxBounds: chennaiBounds, maxBoundsViscosity: 1.0
+        });
+        
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+        
+        L.Control.geocoder({
+            defaultMarkGeocode: false,
+            position: 'topleft',
+            geocodingQueryParams: { countrycodes: 'in', viewbox: '79.95,12.90,80.40,13.20' }
+        }).addTo(map);
+        
+        let markers = L.layerGroup().addTo(map);
+        let currentLat, currentLng;
+
+        function loadComplaints() {
+            fetch('/api/complaints').then(r => r.json()).then(complaints => {
+                markers.clearLayers();
+                complaints.forEach(c => {
+                    if (chennaiBounds[0][0] <= c.lat && c.lat <= chennaiBounds[1][0] && 
+                        chennaiBounds[0][1] <= c.lng && c.lng <= chennaiBounds[1][1]) {
+                        const icon = L.divIcon({
+                            html: '<div style="color:red;font-size:30px;font-weight:bold;">!</div>',
+                            iconSize: [36, 36]
+                        });
+                        const marker = L.marker([c.lat, c.lng], {icon: icon}).addTo(markers);
+                        marker.bindPopup(`
+                            <div>
+                                <h4 style="color:#dc2626;">⚡ ${c.complaint_type.replace('_', ' ').toUpperCase()}</h4>
+                                ${c.custom_reason ? `<p><strong>Custom:</strong> ${c.custom_reason}</p>` : ''}
+                                <p>${c.description}</p>
+                                <p><small>⏰ ${new Date(c.timestamp).toLocaleString()}</small></p>
+                                <p>👍 <span id="uv${c.id}">${c.upvotes}</span> upvotes</p>
+                                <button onclick="upvote(${c.id})" style="background:#10b981;color:white;border:none;padding:8px;border-radius:4px;">Upvote</button>
+                            </div>
+                        `);
+                    }
+                });
+            });
+        }
+
+        map.on('click', e => {
+            if (chennaiBounds[0][0] <= e.latlng.lat && e.latlng.lat <= chennaiBounds[1][0] &&
+                chennaiBounds[0][1] <= e.latlng.lng && e.latlng.lng <= chennaiBounds[1][1]) {
+                currentLat = e.latlng.lat;
+                currentLng = e.latlng.lng;
+                document.getElementById('timestamp').value = new Date().toISOString().slice(0,16);
+                showReportForm();
+            }
+        });
+
+        function showReportForm() {
+            document.getElementById('report-form').style.display = 'block';
+            document.getElementById('complaint-type').value = '';
+            document.getElementById('custom-reason').style.display = 'none';
+            document.getElementById('desc').value = '';
+        }
+
+        function closeReportForm() {
+            document.getElementById('report-form').style.display = 'none';
+        }
+
+        document.getElementById('complaint-type').addEventListener('change', function() {
+            document.getElementById('custom-reason').style.display = 
+                this.value === 'other' ? 'block' : 'none';
+        });
+
+        function submitReport() {
+            const type = document.getElementById('complaint-type').value;
+            const custom = document.getElementById('custom-reason').value;
+            const desc = document.getElementById('desc').value;
+            
+            if (!type || !desc) return alert('Please fill all fields');
+            
+            fetch('/report', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    lat: currentLat, lng: currentLng,
+                    complaint_type: type,
+                    custom_reason: custom || null,
+                    description: desc
+                })
+            }).then(() => {
+                closeReportForm();
+                loadComplaints();
+            });
+        }
+
+        function upvote(id) {
+            fetch(`/upvote/${id}`, {method: 'POST'})
+            .then(r => r.json())
+            .then(data => document.querySelectorAll(`#uv${id}`).forEach(el => el.textContent = data.upvotes));
+        }
+
+        loadComplaints();
+        setInterval(loadComplaints, 10000);
+    </script>
+</body>
+</html>
